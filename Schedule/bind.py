@@ -2,6 +2,7 @@
 Bind
 
 bind可以将指定的轴与线程轴绑定，通常在gpu编程中使用。
+bind将iter绑定到block或thread的index上，从而把循环的任务分配到线程，实现并行化计算，这是针对CUDA后端最核心的部分。
 
 """
 
