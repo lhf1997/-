@@ -1,3 +1,11 @@
+"""
+tile
+
+tile将stage的两个维度按照各自的factor拆分，并以固定顺序依次返回两个outer和两个inner的iter，从而增加循环层数，形成更小的计算任务。
+事实上，tile是可以由split和reorder来实现的，tile是矩阵乘法和卷积计算的重要schedule。
+
+"""
+
 import tvm
 from tvm import te
 import numpy as np
