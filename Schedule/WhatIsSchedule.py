@@ -1,4 +1,9 @@
 """
+schedule的使用
+
+什么是schedule？
+通常存在几种计算相同结果的方法，但是，不同的方法将导致不同的位置和性能。因此TVM要求用户提供如何执行称为Schedule的计算。
+
 Schedule Primitives in TVM
 https://tvm.apache.org/docs/tutorials/language/schedule_primitives.html
 """
