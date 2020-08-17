@@ -1,3 +1,12 @@
+"""
+
+Split
+
+split是fuse的反操作，把iter以factor为间隔分离成outer与inner两层迭代，增加循环层数，用于将循环操作分割为更小的子任务。
+事实上，以CUDA为例，gridDim和blockDim都可以最多是三维，所以通过split可以产生新的维度用于绑定到grid和block上
+
+"""
+
 import tvm
 from tvm import te
 import numpy as np
