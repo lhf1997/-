@@ -97,9 +97,9 @@ uop加载后，将地址索引推入compute模块，开始执行gemm指令，由
 
 
 
-Load Inp
+Load Input
 
-​	该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的input数据，再根据sram_base字段的地址放入片上inp_mem中。该卷积计算任务的fmap的h=8，w=8。VTA会将该数据padding后加载到片上buffer。DEPT FLAGS会将pop next 写为1，表示通知compute模块有load进程。
+该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的input数据，再根据sram_base字段的地址放入片上inp_mem中。该卷积计算任务的fmap的h=8，w=8。VTA会将该数据padding后加载到片上buffer。DEPT FLAGS会将pop next 写为1，表示通知compute模块有load进程。
 
 ```c++
   // Pop dependence token if instructed
@@ -108,13 +108,13 @@ Load Inp
   }
 ```
 
-该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 1, push prev: 0, push next: 0`  ，上述代码段表示检测compute模块是否运算结束，
+该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 1, push prev: 0, push next: 0`  ，上述代码段表示检测compute模块是否运算结束，该过程的queue消息为：`l2g_queue = 0, g2l_queue = 0, s2g_queue = 0, g2s_queue = 0`。
 
 
 
-Load Wgt
+Load Weight
 
-​	该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的weight数据，再根据sram_base字段的地址放入片上wgt_mem中。
+该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的weight数据，再根据sram_base字段的地址放入片上wgt_mem中。
 
 ```c++
   // Push dependence token if instructed
