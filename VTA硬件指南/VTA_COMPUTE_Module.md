@@ -82,7 +82,7 @@ Load Uop
 
 ​	
 
-GEMM
+GEMM Reset
 
 uop加载后，将地址索引推入compute模块，开始执行gemm指令，由于uop提供的索引均为零，此时gemm指令不进行任何计算任务，DEPT FLAGS会将push prev写为1，同时将g2l_dep_queue也写为1，对应hls源码如下，表示compute中有指令在进行。
 
@@ -99,7 +99,7 @@ uop加载后，将地址索引推入compute模块，开始执行gemm指令，由
 
 Load Input
 
-该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的input数据，再根据sram_base字段的地址放入片上inp_mem中。该卷积计算任务的fmap的h=8，w=8。VTA会将该数据padding后加载到片上buffer。DEPT FLAGS会将pop next 写为1，表示通知compute模块有load进程。
+该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的input数据，再根据sram_base字段的地址放入片上inp_mem中。对应为`DRAM: 0x00000100, SRAM:0x0000`。该卷积计算任务的fmap的h=8，w=8，VTA会将该数据padding后加载到片上buffer对应为：。DEPT FLAGS为0100，会将pop next 写为1，表示通知compute模块有数据要load进来。
 
 ```c++
   // Pop dependence token if instructed
@@ -108,7 +108,15 @@ Load Input
   }
 ```
 
-该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 1, push prev: 0, push next: 0`  ，上述代码段表示检测compute模块是否运算结束，该过程的queue消息为：`l2g_queue = 0, g2l_queue = 0, s2g_queue = 0, g2s_queue = 0`。
+该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 1, push prev: 0, push next: 0`  ，上述代码段表示检测compute模块是否运算结束，该过程的queue消息为：`l2g_queue = 0, g2l_queue = 0, s2g_queue = 0, g2s_queue = 0`。由于与gemm的reset不存在数据相关性，g2l_queue在这里被清空，相应的软件代码如下所示。
+
+```c++
+ else if (c.mem.opcode == VTA_OPCODE_LOAD &&
+        (c.mem.memory_type == VTA_MEM_ID_INP || c.mem.memory_type == VTA_MEM_ID_WGT)) {
+        if (c.mem.pop_next_dep) g2l_queue--; // g2l_queue在这里被清空
+        if (c.mem.push_next_dep) l2g_queue++;
+      }
+```
 
 
 
