@@ -93,7 +93,15 @@ uop加载后，将地址索引推入compute模块，开始执行gemm指令，由
   }
 ```
 
-该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 0, push prev: 1, push next: 0` ， 是GEMM指令中自带的四位指令字段。该过程的queue消息为：`l2g_queue = 0， g2l_queue = 1，s2g_queue = 0, g2s_queue = 0`   ，是VTA用于检测模块计算进度的标识，不在指令字段中，用于解决数据相关性的问题。
+该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 0, push prev: 1, push next: 0` ， 是GEMM指令中自带的四位指令字段。该过程的queue消息为：`l2g_queue = 0， g2l_queue = 1，s2g_queue = 0, g2s_queue = 0`   ，是VTA用于检测模块计算进度的标识，不在指令字段中，用于解决数据相关性的问题。为了便于理解，GEMM Reset的伪代码相应可以表示为如下。
+
+```python
+for b in range(0, batch):
+    for co in range(0, channel_out):
+        for h in range(0, height):
+            for w in range(0, width):
+                output[b][co][h][w] = 0
+```
 
 
 
@@ -138,5 +146,34 @@ Load Weight
 
 Load Uop
 
-在数据加载完之后，VTA会加载uop指令给gemm指令提供计算地址的索引，gemm指令的最内层循环没进行一次矩阵乘法运算，uop就要给该运算提供相应的inp、wgt和acc buffer的索引一次，
+在数据加载完之后，VTA会加载uop指令给gemm指令提供计算地址的索引，gemm指令的最内层循环没进行一次矩阵乘法运算，uop就要给该运算提供相应的inp、wgt和acc buffer的索引一次，VTA中的auto tunning会找到卷积分块的最优解，本次卷积计算任务不涉及分块。
+
+```c++
+for (i = 0; i < iter_out; i++) {
+	for (j = 0; j < iter_in; j++) {
+      	for (k = uop_bgn; k < uop_end; k++) {
+       		// Read micro op
+       		uop_T uop = uop_mem[k];
+       		// Read in memory indices
+       		acc_idx_T acc_idx = uop.dst_idx;
+       		inp_idx_T inp_idx = uop.inp_idx;
+       		wgt_idx_T wgt_idx = uop.wgt_idx;
+       		// Update those indices with the following affine functions
+       		acc_idx += iter_in * dst_factor_in + iter_out * dst_factor_out;
+       		inp_idx += iter_in * src_factor_in + iter_out * src_factor_out;
+       		wgt_idx += iter_in * wgt_factor_in + iter_out * wgt_factor_out;
+       		// Perform GEMM operation
+       		acc_mem[acc_idx] += dot(inp_mem[inp_idx], wgt[wgt_idx]);
+       	}
+    }
+}
+```
+
+该过程的DEPT FLAGS为：`dep - pop prev: 1, pop next: 0, push prev: 0, push next: 0`  相应的queue为：`l2g_queue = 0, g2l_queue = 0, s2g_queue = 0, g2s_queue = 0`  。
+
+
+
+GEMM
+
+GEMM指令执行矩阵的乘加运算，
 
