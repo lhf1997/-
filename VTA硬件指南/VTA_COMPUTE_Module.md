@@ -99,7 +99,7 @@ uop加载后，将地址索引推入compute模块，开始执行gemm指令，由
 
 Load Input
 
-该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的input数据，再根据sram_base字段的地址放入片上inp_mem中。对应为`DRAM: 0x00000100, SRAM:0x0000`。该卷积计算任务的fmap的h=8，w=8，VTA会将该数据padding后加载到片上buffer对应为：。DEPT FLAGS为0100，会将pop next 写为1，表示通知compute模块有数据要load进来。
+该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的input数据，再根据sram_base字段的地址放入片上inp_mem中。对应为`DRAM: 0x00000100, SRAM:0x0000`。该卷积计算任务的fmap的h=8，w=8，VTA会将该数据padding后加载到片上buffer对应为：。DEPT FLAGS为0100（指令中已指定的字段），会将pop next 写为1，表示通知compute模块有数据要load进来。
 
 ```c++
   // Pop dependence token if instructed
@@ -122,7 +122,7 @@ Load Input
 
 Load Weight
 
-该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的weight数据，再根据sram_base字段的地址放入片上wgt_mem中。
+该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的weight数据，再根据sram_base字段的地址放入片上wgt_mem中。卷积核大小为3×3，对应到内存中是从0-8共九位连续存放的字段。加载Weight时的DEPT FLAGS为0001，将push next写为1，物理含义即为将加载的数据通过Load与Compute模块之间的Buffer将load好的数据传递进去。
 
 ```c++
   // Push dependence token if instructed
@@ -132,5 +132,11 @@ Load Weight
 }
 ```
 
+该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 0, push prev: 0, push next: 1`，相应的queue为：`l2g_queue = 1, g2l_queue = 0,s2g_queue = 0, g2s_queue = 0`。
 
+
+
+Load Uop
+
+在数据加载完之后，VTA会加载uop指令给gemm指令提供计算地址的索引，gemm指令的最内层循环没进行一次矩阵乘法运算，uop就要给该运算提供相应的inp、wgt和acc buffer的索引一次，
 
