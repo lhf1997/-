@@ -49,10 +49,10 @@ VTA中的COMPUTE模块在整个设计中主要进行张量级别的操作，主�
 结合上图右侧的伪代码，且对应到上图四位DEPT FLAGS分别为：
 
 ```powershell
-pop prev # producer RAW queue， 读取FIFO状态
-pop next # consumer RAW queue， 读取FIFO状态
-push prev # producer WAR queue, COMPUTE模块完成计算后，向load写1
-push next # consumer WAR queue， COMPUTE模块完成计算后，向store写1
+pop prev # producer RAW queue， 向前一queue读取FIFO
+pop next # consumer RAW queue， 向后一queue读取FIFO
+push prev # producer WAR queue, 向前一queue的FIFO写1
+push next # consumer WAR queue， 向后一queue的FIFO写1
 ```
 
 
@@ -101,37 +101,124 @@ ARM核会向VTA发送启动信号以开启PL侧的VTA，FEICH模块会从DRAM中
 
 Load Uop
 
-首先，LOAD指令会从DRAM中加载地址数据到uop_mem中，该过程提供需要计算数据的索引。每一组uop指令会对应到一条GEMM或ALU指令的操作，首先对gemm指令进行初始化操作，uop字段中的索引均为0，即`[0000] acc=0, inp=0, wgt=0`  。该LOAD指令不进行其他操作，所以四位DEPT FLAGS均为零，DRAM和SRAM地址均为初始地址。
+首先，LOAD指令会从DRAM中加载地址数据到uop_mem中，该过程提供需要计算数据的索引。每一组uop指令会对应到一条GEMM或ALU指令的操作，首先对gemm指令进行初始化操作，uop字段中的索引均为0，即`[0000] acc=0, inp=0, wgt=0`  。该LOAD指令在COMPUTE模块中执行，所以pop prev为1，表示向LD→CMP Q读取FIFO。
+
+![image-20201022202547884](C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201022202547884.png)
+
+该指令为：
+
+```shell
+# 操作码
+OPCODE：0					#4位
+# 4为数据相关性标识
+DEPT FLAGS：0010
+# 片上缓存buffer对象
+BUFFER_ID：uop_mem			#2位
+# 片上缓存基地址
+SRAM_BASE ：0x0000			#16位
+# DRAM基地址
+DRAM_BASE ：0x00001400		#32位
+# 以下为DMA参数
+Y SIZE: 0000000000000001	#16位 
+X SIZE: 0000000000000001	#16位	
+X STRIDE: 0000000000000001	#16位
+Y_PAD_0: 0000				#4位
+Y_PAD_1: 0000				#4位
+X_PAD_0: 00					#2位
+X_PAD_1: 00					#2位
+```
 
 
 
 GEMM Reset
 
-uop加载后，将地址索引推入compute模块，开始执行gemm指令，由于uop提供的索引均为零，此时gemm指令不进行任何计算任务，该指令DEPT FLAGS字段的push prev为1，表示compute中有指令在进行。
+uop加载后，将地址索引推入compute模块，开始执行gemm指令，由于uop提供的索引均为零，此时gemm指令不进行任何计算任务，该指令DEPT FLAGS字段的push prev为1，该指令在COMPUTE模块中执行，表示向CMP→LD Q中写1。
 
-该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 0, push prev: 1, push next: 0` ， 是GEMM指令中自带的四位指令字段。该过程的queue消息为：`l2g_queue = 0， g2l_queue = 1，s2g_queue = 0, g2s_queue = 0`   ，是VTA用于检测模块计算进度的标识，不在指令字段中，用于解决数据相关性的问题。
+![image-20201022210852310](C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201022210852310.png)
+
+该指令为：
+
+```shell
+OPCODE：2
+DEPT FLAGS：0010
+RESET:1						#RESET		
+MICRO-OP BEGIN: 0			#uop起始地址
+MICRO-OP END: 1				#uop结束地址，只用到一条
+LOOP EXTENT 0: 8			#Irerations in the outer uop exe loop，与fmap大小有关
+LOOP EXTENT 1: 8			#...inner uop ... ，与famp有关
+# 以下为DMA参数
+ACCUM IDX FACTOR 0: 1		#acc_mem外层循环地址索引
+ACCUM IDX FACTOR 1:	8		#acc_mem内存循环地址索引，将会用到的acc_mem清空
+INPUT IDX FACTOR 0:	0 		#inp_mem外层循环地址索引
+INPUT IDX FACTOR 1:	0 		#inp_mem内存循环地址索引
+WEIGHT IDX FACTOR 0: 0		#wgt_mem外层循环地址索引
+WEIGHT IDX FACTOR 1: 0		#wgt_mem内存循环地址索引
+```
 
 
 
 Load Input
 
-该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的input数据，再根据sram_base字段的地址放入片上inp_mem中。对应为`DRAM: 0x00000100, SRAM:0x0000`。该卷积计算任务的fmap的h=8，w=8，DEPT FLAGS为0100（指令中已指定的字段），会将pop next 写为1，表示通知compute模块有数据要load进来。
+具体指令字段见上图，该卷积计算任务的fmap的h=8，w=8，DEPT FLAGS为0100，即pop next 为1，表示读取LD→CMP Q。
 
-该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 1, push prev: 0, push next: 0`  ，上述代码段表示检测compute模块是否运算结束，该过程的queue消息为：`l2g_queue = 0, g2l_queue = 0, s2g_queue = 0, g2s_queue = 0`。由于与gemm的reset不存在数据相关性，g2l_queue在这里被清空。
+```shell
+OPCODE：0					
+DEPT FLAGS：0010
+BUFFER_ID：inp_mem			
+SRAM_BASE ：0x0000			
+DRAM_BASE ：0x000000100		
+# 以下为DMA参数
+Y SIZE: 0000000000001000	#8, fmap为8×8
+X SIZE: 0000000000001000	#8	
+X STRIDE: 0000000000001000	#8
+Y_PAD_0: 0001				#1， 卷积运算padding=1
+Y_PAD_1: 0001				#1
+X_PAD_0: 01					#1
+X_PAD_1: 01					#1
+```
+
+本次卷积计算中，加载input的伪代码可以表示为：
+
+```python
+for H in range(0,10)
+	for W in range(0,10)
+    	for c in range(0,16)
+        	inp_mem[N][C][H][W] = DRAM_INP[N][C][H][W]
+```
 
 
 
 Load Weight
 
-该LOAD指令会根据dram_base字段的地址加载存放在DRAM中的weight数据，再根据sram_base字段的地址放入片上wgt_mem中。卷积核大小为3×3，对应到内存中是从0-8共九位连续存放的字段。加载Weight时的DEPT FLAGS为0001，将push next写为1，物理含义即为将加载的数据通过Load与Compute模块之间的Buffer将load好的数据传递进去。
+该卷积核大小为3×3，DEPT FLAGS为0001，即push next为1，表示向CMP→ST Q中写1。
 
-该过程的DEPT FLAGS为：`dep - pop prev: 0, pop next: 0, push prev: 0, push next: 1`，相应的queue为：`l2g_queue = 1, g2l_queue = 0,s2g_queue = 0, g2s_queue = 0`。
+```shell
+OPCODE：0					
+DEPT FLAGS：0001
+BUFFER_ID：wgt_mem			
+SRAM_BASE ：0x0000			
+DRAM_BASE ：0x000000020		
+# 以下为DMA参数
+Y SIZE: 0000000000000001	#1
+X SIZE: 0000000000001001	#9
+X STRIDE: 0000000000001001	#9，3×3卷积核在内存中连续存放
+Y_PAD_0: 0000				
+Y_PAD_1: 0000				
+X_PAD_0: 01					
+X_PAD_1: 01				
+```
 
 
 
 Load Uop
 
-在数据加载完之后，VTA会加载uop指令给gemm指令提供计算地址的索引，gemm指令的最内层循环没进行一次矩阵乘法运算，uop就要给该运算提供相应的inp、wgt和acc buffer的索引一次，VTA中的auto tunning会找到卷积分块的最优解，本次卷积计算任务不涉及分块。
+经过以上几条指令，input fmap与weight分别从DRAM中存放到inp_mem和wgt_mem中，此时，需要加载uop指令，向gemm运算提供计算地址的索引，gemm指令的最内层循环每进行一次矩阵乘法运算，uop就要给该运算提供相应的inp、wgt和acc buffer的索引一次。
+
+
+
+GEMM
+
+GEMM指令执行矩阵的乘加运算，实际上，VTA在针对某一具体的卷积计算任务时，会将该具体的卷积计算任务分解成一层一层循环进行计算。VTA中通过primitives会对该计算过程的细节进行调整，目的是在有限计算资源的情况下，优化计算资源的利用率。最常见的三种primitives有split（将一层循环，分成内外两层循环），reorder（对多层循环的循环顺序进行重新排序），compute_at（在指定的某层循环内融合两个循环）。基本的卷积过程如下：
 
 ```c++
 for (i = 0; i < iter_out; i++) {
@@ -154,13 +241,7 @@ for (i = 0; i < iter_out; i++) {
 }
 ```
 
-该过程的DEPT FLAGS为：`dep - pop prev: 1, pop next: 0, push prev: 0, push next: 0`  相应的queue为：`l2g_queue = 0, g2l_queue = 0, s2g_queue = 0, g2s_queue = 0`  。
 
-
-
-GEMM
-
-GEMM指令执行矩阵的乘加运算，实际上，VTA在针对某一具体的卷积计算任务时，会将该具体的卷积计算任务分解成一层一层循环进行计算。VTA中通过primitives会对该计算过程的细节进行调整，目的是在有限计算资源的情况下，优化计算资源的利用率。最常见的三种primitives有split（将一层循环，分成内外两层循环），reorder（对多层循环的循环顺序进行重新排序），compute_at（在指定的某层循环内融合两个循环）。基本的卷积过程如下：
 
 ```python
 # reset acc buffer
