@@ -10,7 +10,7 @@
 
 COMPUTE模块如下所示，由Reg File、uop cache、GEMM核和ALU构成。与LOAD模块通过LOAD BUFFER、UOP SRAM、ACTIVATION SRAM和KERNEL SRAM进行数据传输和共享，与STORE模块通过STORE BUFFER进行交互。COMPUTE Q用于接收FETCH模块发送过来的GEMM或ALU指令。
 
-<img src="C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201013193422875.png" alt="image-20201013193422875" style="zoom: 50%;" />
+<img src="C:\Users\刘鸿飞\AppData\Roaming\Typora\typora-user-images\image-20201022112220552.png" alt="image-20201022112220552" style="zoom:67%;" />
 
 
 
@@ -32,7 +32,9 @@ VTA中的COMPUTE模块在整个设计中充当RISC处理器的角色，主要进
 
 <img src="C:\Users\刘鸿飞\Desktop\vta开发文档\picture\tensor_core.png" style="zoom: 33%;" />
 
-每一条GEMM指令会对应到一组micro-op，如下图所示，uop存放在uop buffer中，包含acc_idx、inp_idx和wgt_idx这三个字段，提供数据的索引地址。GEMM指令根据uop提供的索引将计算过程循环嵌套成多个for循环，以保证GEMM核在每个周期可以执行一次`（BATCH，BLOCK_IN）×（BLOCK_OUT， BLOCK_IN）`。如下面伪代码所示，最内层循环对inp和wgt数据进行矩阵乘法，将结果累加到acc_mem中，同时根据GEMM指令中的字段更新下次循环所需数据存放在buffer中的索引。![](C:\Users\刘鸿飞\Desktop\vta开发文档\picture\gemm_core.png)
+每一条GEMM指令会对应到一组micro-op，如下图所示，uop存放在uop buffer中，包含acc_idx、inp_idx和wgt_idx这三个字段，提供数据的索引地址。GEMM指令根据uop提供的索引将计算过程循环嵌套成多个for循环，以保证GEMM核在每个周期可以执行一次`（BATCH，BLOCK_IN）×（BLOCK_OUT， BLOCK_IN）`。如下面伪代码所示，最内层循环对inp和wgt数据进行矩阵乘法，将结果累加到acc_mem中，同时根据GEMM指令中的字段更新下次循环所需数据存放在buffer中的索引。
+
+<img src="C:\Users\刘鸿飞\Desktop\vta开发文档\picture\gemm_core.png" style="zoom: 50%;" />
 
 ## Forward analysis	
 
@@ -53,7 +55,7 @@ Conv2DWorkload(batch=1, height=8, width=8, in_filter=32, out_filter=32,hkernel=3
 
 通常，一个完整的卷积过程会如下图所示，主要包括DMA Load、Conv2D、Shr、Max、Min和DMA Store这几个部分。
 
-![image-20201020144137235](C:\Users\刘鸿飞\AppData\Roaming\Typora\typora-user-images\image-20201020144137235.png)
+<img src="C:\Users\刘鸿飞\AppData\Roaming\Typora\typora-user-images\image-20201020144137235.png" alt="image-20201020144137235" style="zoom:67%;" />
 
 当如上的卷积运算任务准备就绪后，VTA首先会对数据的格式分析，先将其转化为NCHW的格式。随后，VTA会再将数据进行打包，将数据格式转换为NCHWnc，对于本例来说，打包后的数据格式如下：
 
@@ -217,7 +219,7 @@ FINISH
 
 
 
-总结
+## Summary
 
 VTA采用两级ISA的设计，对于某一具体的计算任务，首先，VTA会将该任务的数据缓存方式修改为NCHWnc，随后针对不同FPGA的性能带宽，应用tvm primitives将卷积计算进行分块重排等操作。之后，会生成计算过程完整流程的调度Schedule，VTA会将生成的文件、VTA runtime和预构的bit流文件打包成 .o文件通过RPC发送到板上进行实现。
 
