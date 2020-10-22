@@ -212,13 +212,26 @@ X_PAD_1: 01
 
 Load Uop
 
-经过以上几条指令，input fmap与weight分别从DRAM中存放到inp_mem和wgt_mem中，此时，需要加载uop指令，向gemm运算提供计算地址的索引，gemm指令的最内层循环每进行一次矩阵乘法运算，uop就要给该运算提供相应的inp、wgt和acc buffer的索引一次。
+经过以上几条指令，input fmap与weight分别从DRAM中存放到inp_mem和wgt_mem中，此时，需要加载uop指令，向gemm运算提供计算地址的索引，gemm指令的最内层循环每进行一次矩阵乘法运算，uop就要给该运算提供相应的inp、wgt和acc buffer的索引一次。该指令在COMPUTE模块中进行，DEPT FLAGS为1000，即pop prev=1，表示读LD→CMP的FIFO。acc、inp和mem的起始索引均为0，每次循环都会进行更新，如下代码块。本次计算外层循环为8，内存循环为3。所以共会用到24条uop指令。
+
+```c++
+       		// Read micro op
+       		uop_T uop = uop_mem[k];
+       		// Read in memory indices
+       		acc_idx_T acc_idx = uop.dst_idx;
+       		inp_idx_T inp_idx = uop.inp_idx;
+       		wgt_idx_T wgt_idx = uop.wgt_idx;
+       		// Update those indices with the following affine functions
+       		acc_idx += iter_in * dst_factor_in + iter_out * dst_factor_out;
+       		inp_idx += iter_in * src_factor_in + iter_out * src_factor_out;
+       		wgt_idx += iter_in * wgt_factor_in + iter_out * wgt_factor_out;
+```
 
 
 
 GEMM
 
-GEMM指令执行矩阵的乘加运算，实际上，VTA在针对某一具体的卷积计算任务时，会将该具体的卷积计算任务分解成一层一层循环进行计算。VTA中通过primitives会对该计算过程的细节进行调整，目的是在有限计算资源的情况下，优化计算资源的利用率。最常见的三种primitives有split（将一层循环，分成内外两层循环），reorder（对多层循环的循环顺序进行重新排序），compute_at（在指定的某层循环内融合两个循环）。基本的卷积过程如下：
+GEMM指令执行矩阵的乘加运算，实际上，VTA在针对某一具体的卷积计算任务时，会将该具体的卷积计算任务分解成一层一层循环进行计算。VTA中通过primitives会对该计算过程的细节进行调整，目的是在有限计算资源的情况下，优化计算资源的利用率。最常见的三种primitives有split（将一层循环，分成内外两层循环），reorder（对多层循环的循环顺序进行重新排序），compute_at（在指定的某层循环内融合两个循环）。基本的卷积过程如下，对于最内层循环，首先读取uop_mem中inp、wgt、acc地址的索引，随后将索引进行更新，并执行gemm操作，最后将结果写入acc_mem。
 
 ```c++
 for (i = 0; i < iter_out; i++) {
@@ -241,45 +254,112 @@ for (i = 0; i < iter_out; i++) {
 }
 ```
 
-
+对于标准卷积来说，可以表示为如下所示：
 
 ```python
-# reset acc buffer
-for b in range(0, batch):
-    for co in range(0, channel_out):
-        for h in range(0, height):
-            for w in range(0, width):
-                output[b][co][h][w] = 0
-                # conv2d
-                for ci in range(0, channel_in):
-                    for kh in range(0, kernel_height):
-                        for kw in range(0, kernel_weight):
-                            # fmap times weight 
-                            output[b][co][h][w] += weight[co][ci][kh][kw] * 
-                            					   feature[b][ci][h*stride+kh][w*stride+kw]
-                # add bias 
-                output[b][co][h][w] += bias[b][co][h][w]
+# after reset operation
+# conv2d
+for ci in range(0, channel_in):
+    for kh in range(0, kernel_height):
+          for kw in range(0, kernel_weight):
+                output[b][co][h][w] += weight[co][ci][kh][kw] * 
+                            		   feature[b][ci][h*stride+kh][w*stride+kw]
+output[b][co][h][w] += bias[b][co][h][w]
 ```
 
-本次计算中由于不需要分块，可以一次加载完，同时也不考虑虚拟线程，所以该条GEMM指令的四条queue均为零，不存在数据相关性的问题。
+实际上，VTA会对卷积运算在输出通道，高和宽上进行分块（通过auto tuing找到最佳参数），将卷积的计算循环展开。随后会将卷积的循环进行重排，将块内循环放入循环内侧，如下所示。
+
+```python
+# 忽略load input，load weight
+for b in range(0, batch):
+    for h1 in range(0, height/tile_h):
+        for co1 in range(0, channel_out/tile_co):
+            for w1 in range(0, width/tile_w):
+                #conv2d
+                for co2 in range(0, tile_co):
+                    for h2 in range(0, tile_h):
+                        for w2 in range(0, tile_w):
+                            output[b][co1][co2][h1][h2][w1][w2] = 0
+                            for ci in range(0, channel_in):
+                    			for kh in range(0, kernel_height):
+                                    for kw in range(0, kernel_weight):
+                                        output[b][co1][co2][h1][h2][w1][w2] += weight[co1][co2][ci][kh][kw]
+* 																							
+                                        feature[b][ci][(h1*tile_h+h2)*stride+kh][(w1*tile_w+w2)*stride+kw]
+    
+    						output[b][co1][co2][h1][h2][w1][w2] += bias[b][co1][co2][h1][h2][w1][w2]
+```
+
+之后VTA还会对其进行reorder，最大化利用cache中的现有数据，减少反复载入载出的情况。在这一步会往整体循环中插入LOAD/SOTRE指令，完成最终的调度。
+
+```shell
+OPCODE：2
+DEPT FLAGS：0010
+RESET:0						
+MICRO-OP BEGIN: 1			
+MICRO-OP END: 25			#共用到8*3=24条uop
+LOOP EXTENT 0: 8			
+LOOP EXTENT 1: 3			
+ACCUM IDX FACTOR 0: 1		
+ACCUM IDX FACTOR 1:	0		
+INPUT IDX FACTOR 0:	1		
+INPUT IDX FACTOR 1:	1 		
+WEIGHT IDX FACTOR 0: 0		
+WEIGHT IDX FACTOR 1: 1		
+```
 
 
 
 SHR、MIN、MAX
 
-在VTA中gemm部分计算结束后，会对结果进行SHR、MIN和MAX操作，用于实现模拟Relu非线性函数的效果，具体算法不做深入。SHR、MIN和MAX三种操作也同样实在COMPUTE模块中通过ALU来实现的，与GEMM一样，每次进行运算之前都需要通过uop指令提供计算数据的地址索引。
+在VTA中gemm部分计算结束后，会对结果进行SHR、MIN和MAX操作，用于实现模拟Relu非线性函数的效果，具体算法不做深入。SHR、MIN和MAX三种操作也同样实在COMPUTE模块中通过ALU来实现的，与GEMM一样，每次进行运算之前都需要通过uop指令提供计算数据的地址索引。这里只对ALU SHR进行分析，其他不再赘述。
+
+```shell
+OPCODE：1000
+DEPT FLAGS：0000
+RESET:0						#RESET		
+MICRO-OP BEGIN: 25			#uop起始地址
+MICRO-OP END: 26			#uop结束地址，只用到一条
+LOOP EXTENT 0: 1			#I
+LOOP EXTENT 1: 64			#.
+# 以下为DMA参数
+DST IDX FACTOR 0: 1		#acc_mem外层循环地址索引
+DST IDX FACTOR 1:	8		#acc_mem内存循环地址索引，将会用到的acc_mem清空
+SRC IDX FACTOR 0:	0 		#inp_mem外层循环地址索引
+SRC IDX FACTOR 1:	0 		#inp_mem内存循环地址索引
+ALU OPCODE IDX : 0		#wgt_mem外层循环地址索引
+USE_IMM: 0
+IMM:
+#wgt_mem内存循环地址索引
+```
 
 
 
 STORE
 
-STORE可以视为LOAD指令的反向操作，在Relu进行完毕之后，数据将存放在acc_mem中，STORE就是将该数据以循环读取的方式写入DRAM中，通常在一个周期内是写不完的，所以会在s2l_queue中写1，表示STORE指令还未完成。
+STORE可以视为LOAD指令的反向操作，与LOAD指令使用的指令一段一致，在Relu进行完毕之后，数据将存放在acc_mem中，STORE就是将该数据以循环读取的方式写入DRAM中，通常在一个周期内是写不完的。DEPT FLAGS为1010，由于可能存在数据相关性，所以需要向CMP→ST FIFO中读，并向ST→CMP FIFO中写1。
+
+```shell
+OPCODE：1					
+DEPT FLAGS：1010
+BUFFER_ID：acc_mem			
+SRAM_BASE ：0x0000			
+DRAM_BASE ：0x000000600		
+# 以下为DMA参数
+Y SIZE: 0000000000000001	#1
+X SIZE: 0000000000100000	#64	
+X STRIDE: 0000000000100000	#64，输出fmap为8×8×32，在内存上连续存放
+Y_PAD_0: 0000				#0
+Y_PAD_1: 0000				#0
+X_PAD_0: 00					#0
+X_PAD_1: 00					#0
+```
 
 
 
 FINISH
 
-该过程并无具体的指令运行，主要通过ARM核来检查四条queue中是否还有缓存标识，如果有，则等待响应的模块进行运算处理，如果没有，则该计算过程结束。
+该过程并无具体的指令运行，主要通过ARM核来检查四条queue中是否还有缓存标识，如果有，则等待响应的模块进行运算处理，如果没有，则卷积计算过程结束。
 
 
 
