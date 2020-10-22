@@ -175,5 +175,51 @@ for (i = 0; i < iter_out; i++) {
 
 GEMM
 
-GEMM指令执行矩阵的乘加运算，实际上，VTA在针对某一具体的卷积计算任务时，会将该具体的卷积计算任务分解成一层一层循环进行计算。
+GEMM指令执行矩阵的乘加运算，实际上，VTA在针对某一具体的卷积计算任务时，会将该具体的卷积计算任务分解成一层一层循环进行计算。VTA中通过primitives会对该计算过程的细节进行调整，目的是在有限计算资源的情况下，优化计算资源的利用率。最常见的三种primitives有split（将一层循环，分成内外两层循环），reorder（对多层循环的循环顺序进行重新排序），compute_at（在指定的某层循环内融合两个循环）。基本的卷积过程如下：
+
+```python
+# reset acc buffer
+for b in range(0, batch):
+    for co in range(0, channel_out):
+        for h in range(0, height):
+            for w in range(0, width):
+                output[b][co][h][w] = 0
+                # conv2d
+                for ci in range(0, channel_in):
+                    for kh in range(0, kernel_height):
+                        for kw in range(0, kernel_weight):
+                            # fmap times weight 
+                            output[b][co][h][w] += weight[co][ci][kh][kw] * 
+                            					   feature[b][ci][h*stride+kh][w*stride+kw]
+                # add bias 
+                output[b][co][h][w] += bias[b][co][h][w]
+```
+
+本次计算中由于不需要分块，可以一次加载完，同时也不考虑虚拟线程，所以该条GEMM指令的四条queue均为零，不存在数据相关性的问题。
+
+
+
+SHR、MIN、MAX
+
+在VTA中gemm部分计算结束后，会对结果进行SHR、MIN和MAX操作，用于实现模拟Relu非线性函数的效果，具体算法不做深入。SHR、MIN和MAX三种操作也同样实在COMPUTE模块中通过ALU来实现的，与GEMM一样，每次进行运算之前都需要通过uop指令提供计算数据的地址索引。
+
+
+
+STORE
+
+STORE可以视为LOAD指令的反向操作，在Relu进行完毕之后，数据将存放在acc_mem中，STORE就是将该数据以循环读取的方式写入DRAM中，通常在一个周期内是写不完的，所以会在s2l_queue中写1，表示STORE指令还未完成。
+
+
+
+FINISH
+
+该过程并无具体的指令运行，主要通过ARM核来检查四条queue中是否还有缓存标识，如果有，则等待响应的模块进行运算处理，如果没有，则该计算过程结束。
+
+
+
+总结
+
+VTA采用两级ISA的设计，对于某一具体的计算任务，首先，VTA会将该任务的数据缓存方式修改为NCHWnc，随后针对不同FPGA的性能带宽，应用tvm primitives将卷积计算进行分块重排等操作。之后，会生成计算过程完整流程的调度Schedule，VTA会将生成的文件、VTA runtime和预构的bit流文件打包成 .o文件通过RPC发送到板上进行实现。
+
+当VTA在PYNQ上开始运行时，首先会从DRAM中加载计算数据到相应的buffer中。其次，为了保证VTA的GEMM核的高效，VTA一次会加载尽可能多的LOAD、GEMM、STORE指令，尽可能保证GEMM核处于工作状态，同时将LOAD指令插入到GEMM之前实现对数据的读取，这样就不可避免的会导致出现数据相关性的问题。VTA通过对指令加入FEPT FLAGS标识来避免这个问题，通过加入queue消息实现模块之间状态的通信。由于LOAD指令加载时带宽限制会有较长的延时，VTA引入虚拟线程来掩盖DRAM读取的延时，具体已分析过。
 
