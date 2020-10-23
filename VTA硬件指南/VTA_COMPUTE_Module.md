@@ -212,26 +212,7 @@ X_PAD_1: 01
 
 Load Uop
 
-经过以上几条指令，input fmap与weight分别从DRAM中存放到inp_mem和wgt_mem中，此时，需要加载uop指令，向gemm运算提供计算地址的索引，gemm指令的最内层循环每进行一次矩阵乘法运算，uop就要给该运算提供相应的inp、wgt和acc buffer的索引一次。该指令在COMPUTE模块中进行，DEPT FLAGS为1000，即pop prev=1，表示读LD→CMP的FIFO。acc、inp和mem的起始索引均为0，每次循环都会进行更新，如下代码块。本次计算外层循环为8，内存循环为3。所以共会用到24条uop指令。
-
-```c++
-       		// Read micro op
-       		uop_T uop = uop_mem[k];
-       		// Read in memory indices
-       		acc_idx_T acc_idx = uop.dst_idx;
-       		inp_idx_T inp_idx = uop.inp_idx;
-       		wgt_idx_T wgt_idx = uop.wgt_idx;
-       		// Update those indices with the following affine functions
-       		acc_idx += iter_in * dst_factor_in + iter_out * dst_factor_out;
-       		inp_idx += iter_in * src_factor_in + iter_out * src_factor_out;
-       		wgt_idx += iter_in * wgt_factor_in + iter_out * wgt_factor_out;
-```
-
-
-
-GEMM
-
-GEMM指令执行矩阵的乘加运算，实际上，VTA在针对某一具体的卷积计算任务时，会将该具体的卷积计算任务分解成一层一层循环进行计算。VTA中通过primitives会对该计算过程的细节进行调整，目的是在有限计算资源的情况下，优化计算资源的利用率。最常见的三种primitives有split（将一层循环，分成内外两层循环），reorder（对多层循环的循环顺序进行重新排序），compute_at（在指定的某层循环内融合两个循环）。基本的卷积过程如下，对于最内层循环，首先读取uop_mem中inp、wgt、acc地址的索引，随后将索引进行更新，并执行gemm操作，最后将结果写入acc_mem。
+经过以上几条指令，input fmap与weight分别从DRAM中存放到inp_mem和wgt_mem中，此时，需要加载uop指令，向gemm运算提供计算地址的索引，gemm指令的最内层循环每进行一次矩阵乘法运算，uop就要给该运算提供相应的inp、wgt和acc buffer的索引一次。该指令在COMPUTE模块中进行，DEPT FLAGS为1000，即pop prev=1，表示读LD→CMP的FIFO。acc、inp和mem的起始索引均为0，每次循环都会进行更新，如下代码块。本次计算外层循环为8，内存循环为3，每次会用到24条uop指令。
 
 ```c++
 for (i = 0; i < iter_out; i++) {
@@ -254,7 +235,26 @@ for (i = 0; i < iter_out; i++) {
 }
 ```
 
-对于标准卷积来说，可以表示为如下所示：
+相应伪代码可以表示为：
+
+```python
+for i0 in range(0,8):
+	for i1 in range(0,3):
+		for uop_idx in range (1,25):
+			x, y, z = decode_gemm_indices(uop_buffer[upc])
+            reg_idx = i0 * x0 + i1 * x1 + x
+            inp_idx = i0 * y0 + i1 * y1 + y
+            wgt_idx = i0 * z0 + i1 * z1 + z
+            reg_file[reg_idx] += GEMM(inp_buff[inp_idx], wgt_buff[wgt_idx])
+```
+
+其中，x0，x1，y0，y1，z0，z1分别表示GEMM指令中的部分字段。
+
+
+
+GEMM
+
+GEMM指令执行矩阵的乘加运算，实际上，VTA在针对某一具体的卷积计算任务时，会将该具体的卷积计算任务分解成一层一层循环进行计算。VTA中通过primitives会对该计算过程的细节进行调整，目的是在有限计算资源的情况下，优化计算资源的利用率。最常见的三种primitives有split（将一层循环，分成内外两层循环），reorder（对多层循环的循环顺序进行重新排序），compute_at（在指定的某层循环内融合两个循环）。基本的卷积过程如下，对于最内层循环，首先读取uop_mem中inp、wgt、acc地址的索引，随后将索引进行更新，并执行gemm操作，最后将结果写入acc_mem。对于标准卷积来说，可以表示为如下所示：
 
 ```python
 # after reset operation
@@ -293,10 +293,10 @@ for b in range(0, batch):
 之后VTA还会对其进行reorder，最大化利用cache中的现有数据，减少反复载入载出的情况。在这一步会往整体循环中插入LOAD/SOTRE指令，完成最终的调度。
 
 ```shell
-OPCODE：2
-DEPT FLAGS：0010
+OPCODE：0010
+DEPT FLAGS：0010				#push prev=1，向前一个FIFO写1
 RESET:0						
-MICRO-OP BEGIN: 1			
+MICRO-OP BEGIN: 1			#接着第一条uop的地址
 MICRO-OP END: 25			#共用到8*3=24条uop
 LOOP EXTENT 0: 8			
 LOOP EXTENT 1: 3			
@@ -318,19 +318,18 @@ SHR、MIN、MAX
 OPCODE：1000
 DEPT FLAGS：0000
 RESET:0						#RESET		
-MICRO-OP BEGIN: 25			#uop起始地址
-MICRO-OP END: 26			#uop结束地址，只用到一条
-LOOP EXTENT 0: 1			#I
-LOOP EXTENT 1: 64			#.
+MICRO-OP BEGIN: 25			#
+MICRO-OP END: 26			#只用到一条
+LOOP EXTENT 0: 1			#
+LOOP EXTENT 1: 64			#对8×8矩阵进行shr
 # 以下为DMA参数
-DST IDX FACTOR 0: 1		#acc_mem外层循环地址索引
-DST IDX FACTOR 1:	8		#acc_mem内存循环地址索引，将会用到的acc_mem清空
-SRC IDX FACTOR 0:	0 		#inp_mem外层循环地址索引
-SRC IDX FACTOR 1:	0 		#inp_mem内存循环地址索引
-ALU OPCODE IDX : 0		#wgt_mem外层循环地址索引
+DST IDX FACTOR 0: 1			
+DST IDX FACTOR 1: 0			
+SRC IDX FACTOR 0: 1 		
+SRC IDX FACTOR 1: 0 		
+ALU OPCODE IDX : 0			#SHR、MIN或MAX的opcode
 USE_IMM: 0
-IMM:
-#wgt_mem内存循环地址索引
+IMM: 0
 ```
 
 
@@ -367,5 +366,5 @@ FINISH
 
 VTA采用两级ISA的设计，对于某一具体的计算任务，首先，VTA会将该任务的数据缓存方式修改为NCHWnc，随后针对不同FPGA的性能带宽，应用tvm primitives将卷积计算进行分块重排等操作。之后，会生成计算过程完整流程的调度Schedule，VTA会将生成包含API的文件、VTA runtime和预构的bit流文件打包成 .o文件通过RPC发送到板上进行实现。
 
-当VTA在PYNQ上开始运行时，首先会从DRAM中加载计算数据到相应的buffer中。其次，为了保证VTA的GEMM核的高效，VTA一次会加载尽可能多的LOAD、GEMM、STORE指令，尽可能保证GEMM核处于工作状态，同时将LOAD指令插入到GEMM之前实现对数据的读取，这样就不可避免的会导致出现数据相关性的问题。VTA通过对指令加入FEPT FLAGS标识来避免这个问题，通过加入queue消息实现模块之间状态的通信。由于LOAD指令加载时带宽限制会有较长的延时，VTA引入虚拟线程来掩盖DRAM读取的延时，具体已分析过。
+当VTA在PYNQ上开始运行时，首先会从DRAM中加载计算数据到相应的buffer中。其次，为了保证VTA的GEMM核的高效，VTA一次会加载尽可能多的LOAD、GEMM、STORE指令，尽可能保证GEMM核处于工作状态，同时将LOAD指令插入到GEMM之前实现对数据的读取，这样就不可避免的出现数据相关性的问题。VTA通过对指令加入FEPT FLAGS标识来避免这个问题，通过加入queue消息实现模块之间状态的通信。由于LOAD指令加载时带宽限制会有较长的延时，VTA引入虚拟线程来掩盖DRAM读取的延时，具体已分析过。
 
