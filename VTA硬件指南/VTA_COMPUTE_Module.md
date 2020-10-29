@@ -8,7 +8,7 @@
 
 ## Architecture
 
-COMPUTE模块如下所示，由Reg File、uop cache、GEMM核和Tensor ALU构成。COMPUTE模块与LOAD模块通过INPUT BUFFER、WEIGHT BUFFERUOP SRAM进行数据传输和共享，与STORE模块通过OUTPUT BUFFER进行交互。COMPUTE CMD Q用于接收FETCH模块发送过来的GEMM或ALU指令。
+COMPUTE模块如下所示，由Reg File、uop cache、GEMM核和Tensor ALU构成，Reg File用于存储COMPUTE模块计算结果，uop cache用于存储uop指令字段中的索引信息。COMPUTE模块与LOAD模块通过INPUT BUFFER、WEIGHT BUFFER进行数据传输和共享，与STORE模块通过OUTPUT BUFFER进行交互。COMPUTE CMD Q用于接收FETCH模块发送过来的GEMM或ALU指令。LD→CMP Q、CMP→LD Q、CMP→ST Q、ST→CMP Q是COMPUTE模块与LOAD和STORE模块的依赖队列。通常，COMPUTE模块的工作流程如下：当计算任务的指令流发送到COMPUTE CMD Q时，首先会读取依赖队列LD→CMP Q和ST→CMP Q的FIFO，确定不存在数据相关性后，开始根据uop指令提供计算数据存储的buffer的索引进行相应的GEMM或ALU计算，将计算的中间结果放入Reg File（后文统一称为acc buffer），在该指令完成后，会向CMP→LD Q和CMP→ST Q依赖队列中写1，避免与LOAD和STORE加载或存储的数据产生数据相关性。
 
 <img src="C:\Users\pc\Desktop\vta\图片\vta_overview.png" style="zoom: 20%;" />
 
@@ -16,7 +16,7 @@ COMPUTE模块如下所示，由Reg File、uop cache、GEMM核和Tensor ALU构成
 
 ## VTA’s On-Chip SRAMs
 
-VTA具有三种不同的存储范围，每个范围对应于不同的片上SRAM缓冲区。
+VTA具有五种不同的存储范围，每个范围对应于不同的片上SRAM缓冲区。
 
 ​	inp_mem：input buffer，默认存储数据类型为int8，该SRAM大小为32KB，SRAM大小可通过配置`vta_config.json`自定义。
 
@@ -24,13 +24,21 @@ VTA具有三种不同的存储范围，每个范围对应于不同的片上SRAM�
 
 ​	acc_mem：acc buffer，默认存储数据类型为int32，大小为128KB。该mem既包含卷积和矩阵乘法中的中间结果，又包含非线性函数计算的中间结果。
 
+​	uop buffer：用于存储从DRAM写入的32位uop指令。
+
+​	output buffer：用于存储COMPUTE模块的计算结果，供STORE模块读取。
+
 
 
 ## GEMM Core
 
-VTA中的COMPUTE模块在整个设计中主要进行张量级别的操作，主要包括两个功能单元：GEMM和ALU。GEMM主要进行乘加运算，实现神经网络模型中的卷积层和全连接层，GEMM核中最小的计算单元如下图所示，该矩阵乘法为`（BATCH，BLOCK_IN）×（BLOCK_OUT， BLOCK_IN）`，数据分别存储在inp_mem和wgt_mem中，最后将计算的结果存储在acc_mem中等待累加。
+VTA中的COMPUTE模块在整个设计中主要进行张量级别的操作，主要包括两个功能单元：GEMM和ALU。GEMM主要进行乘加运算，实现神经网络模型中的卷积层和全连接层，GEMM核中最小的计算单元如下图所示，该矩阵乘法为`（BATCH，BLOCK_IN）×（BLOCK_OUT， BLOCK_IN）`，其中，if数据和wgt数据分别存储在inp_mem和wgt_mem中，每次会将计算的结果存储在acc_mem中等待累加。
 
 <img src="C:\Users\pc\Desktop\vta\图片\tensor_core.png" style="zoom: 33%;" />
+
+PE阵列中一列上的乘加单元如下所示，BLOCK_IN大小为16，也就是说，每个周期GEMM核会计算（1，16）×（16，16）大小的矩阵乘法，将256个中间结果存储在acc buffer上，随后在列上对数据进行累加，再经过4个周期后将此次计算的结果（1，16）大小的矩阵写入acc buffer作为本次乘加运算的最终结果。
+
+<img src="C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201029094247585.png" alt="image-20201029094247585" style="zoom:50%;" />
 
 每一条GEMM指令会对应到一组micro-op，如下图所示，uop存放在uop buffer中，包含acc_idx、inp_idx和wgt_idx这三个字段，提供数据的索引地址。GEMM指令根据uop提供的索引将计算过程循环嵌套成多个for循环，以保证GEMM核在每个周期可以执行一次`（BATCH，BLOCK_IN）×（BLOCK_OUT， BLOCK_IN）`。如下面伪代码所示，最内层循环对inp和wgt数据进行矩阵乘法，将结果累加到acc_mem中，同时根据GEMM指令中的字段更新下次循环所需数据存放在buffer中的索引。
 
@@ -54,6 +62,24 @@ pop next # consumer RAW queue， 向后一queue读取FIFO
 push prev # producer WAR queue, 向前一queue的FIFO写1
 push next # consumer WAR queue， 向后一queue的FIFO写1
 ```
+
+
+
+## Dependence Queue
+
+在VTA运行过程中，LOAD、COMPUTE和STORE模块内部的指令执行是可以同时进行的，但是由于LOAD模块与COMPUTE模块共享inp buffer和wgt buffer，COMPUTE模块和STORE模块共享output buffer，所以数据在调度时可能会出现数据相关性问题（RAW、WAR）。为了解决这个问题，VTA引入了dependence queue来解决这个问题，以1位bit的FIFO形式来实现，并且只需要在LOAD和COMPUTE间，COMPUTE和STORE之间插入dep queue。
+
+对于完整的计算过程来说，数据要先被LOAD模块加载到Inp buffer和wgt buffer中，然后再被COMPUTE模块读走进行计算。但是，LOAD指令流和COMPUTE指令流是同时到达指令队列的，如果LOAD和COMPUTE同时执行，必定会出现数据冲突，必须先LOAD完再进行COMPUTE。
+
+对于LOAD模块来说，只有LD→CMP Q和CMP→LD Q与其相关，在连续处理密集计算任务时，LOAD模块会先读取CMP→LD Q模块，当该FIFO为1时表示Gemm0操作已完成，此时LOAD模块进行LD1操作，当将数据读取到相应buffer之后，会向LD→CMP Q的FIFO中写1，表示LD1结束。STORE模块的处理过程类似，这里不再分析。
+
+<img src="C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201029101633017.png" alt="image-20201029101633017" style="zoom: 50%;" />
+
+对于COMPUTE模块来说，首先会读取LD→CMP Q和ST→CMP Q的FIFO，一直查询该FIFO的状态，当LD1结束时向LD→CMP Q写1后，COMPUTE读到1才开始Gemm1操作，在Gemm1结束后，会向CMP→LD Q和CMP→ST Q队列中写1，避免和LD2和ST出现数据冲突。
+
+<img src="C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201029104343829.png" alt="image-20201029104343829" style="zoom:50%;" />
+
+模块之间是否存在数据相关性问题是由软件在编译过程中进行分析处理的，如果存在CPU则会向DEPT FLAGS的指令字段中写入相应的信息，当VTA开始运行时遇到数据相关性问题时就会执行以上的流程。
 
 
 
@@ -101,7 +127,7 @@ ARM核会向VTA发送启动信号以开启PL侧的VTA，FEICH模块会从DRAM中
 
 Load Uop
 
-首先，LOAD指令会从DRAM中加载地址数据到uop_mem中，该过程提供需要计算数据的索引。每一组uop指令会对应到一条GEMM或ALU指令的操作，首先对gemm指令进行初始化操作，uop字段中的索引均为0，即`[0000] acc=0, inp=0, wgt=0`  。该LOAD指令在COMPUTE模块中执行，所以pop prev为1，表示向LD→CMP Q读取FIFO。
+首先，LOAD指令会从DRAM中加载地址数据到uop_mem中，该过程提供需要计算数据的索引。每一组uop指令会对应到一条GEMM或ALU指令的操作，首先对gemm指令进行初始化操作，uop字段中的索引均为0，即`[0000] acc=0, inp=0, wgt=0`  。该LOAD指令在COMPUTE模块中执行，load存放在uop buffer中的索引，在load结束后向CMP→LD Q写FIFO。
 
 ![image-20201022202547884](C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201022202547884.png)
 
@@ -132,7 +158,7 @@ X_PAD_1: 00					#2位
 
 GEMM Reset
 
-uop加载后，将地址索引推入compute模块，开始执行gemm指令，由于uop提供的索引均为零，此时gemm指令不进行任何计算任务，该指令DEPT FLAGS字段的push prev为1，该指令在COMPUTE模块中执行，表示向CMP→LD Q中写1。
+uop加载后，将地址索引推入compute模块，开始执行gemm指令，由于uop提供的索引均为零，此时gemm指令不进行任何计算任务，该指令DEPT FLAGS字段的push prev为1，该指令在COMPUTE模块中执行，结束后会向CMP→LD Q中写1。
 
 ![image-20201022210852310](C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201022210852310.png)
 
@@ -159,7 +185,7 @@ WEIGHT IDX FACTOR 1: 0		#wgt_mem内存循环地址索引
 
 Load Input
 
-具体指令字段见上图，该卷积计算任务的fmap的h=8，w=8，DEPT FLAGS为0100，即pop next 为1，表示读取LD→CMP Q。
+具体指令字段见上图，该卷积计算任务的fmap的h=8，w=8，DEPT FLAGS为0100，即pop next 为1，读取CMP→LD Q的FIFO，直到上一条gemm结束后向该queue写1被读到以后，才进行该条load inp指令。
 
 ```shell
 OPCODE：0					
@@ -190,7 +216,7 @@ for H in range(0,10)
 
 Load Weight
 
-该卷积核大小为3×3，DEPT FLAGS为0001，即push next为1，表示向CMP→ST Q中写1。
+该卷积核大小为3×3，DEPT FLAGS为0001，即push next为1，表示在load权重结束之后，向LD→CMP Q中写1。
 
 ```shell
 OPCODE：0					
@@ -336,7 +362,7 @@ IMM: 0
 
 STORE
 
-STORE可以视为LOAD指令的反向操作，与LOAD指令使用的指令一段一致，在Relu进行完毕之后，数据将存放在acc_mem中，STORE就是将该数据以循环读取的方式写入DRAM中，通常在一个周期内是写不完的。DEPT FLAGS为1010，由于可能存在数据相关性，所以需要向CMP→ST FIFO中读，并向ST→CMP FIFO中写1。
+STORE可以视为LOAD指令的反向操作，与LOAD指令使用的指令一段一致，在Relu进行完毕之后，数据将存放在acc_mem中，STORE就是将该数据以循环读取的方式写入DRAM中，通常在一个周期内是写不完的。DEPT FLAGS为1010，由于可能存在数据相关性，所以需要向CMP→ST FIFO中读，直到为1时即gemm结束后，才开始STORE，在STORE过程结束后，会向ST→CMP FIFO中写1。
 
 ```shell
 OPCODE：1					
@@ -358,7 +384,7 @@ X_PAD_1: 00					#0
 
 FINISH
 
-该过程并无具体的指令运行，主要通过ARM核来检查四条queue中是否还有缓存标识，如果有，则等待响应的模块进行运算处理，如果没有，则卷积计算过程结束。
+该过程并无具体的指令运行，VTA会检查四条queue中是否还有缓存标识，如果有，则等待响应的模块进行运算处理，如果没有，则卷积计算过程结束。
 
 
 
