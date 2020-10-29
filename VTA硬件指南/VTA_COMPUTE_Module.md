@@ -2,6 +2,8 @@
 
 本文主要介绍VTA的COMPUTE模块，结合hls源码，分析GEMM和ALU指令的具体用法。
 
+2020/10/29 修改：修正了上一版部分错误的地方，补充说明dependence queue，补充COMPUTE模块的硬件实现。
+
 
 
 [TOC]
@@ -43,6 +45,10 @@ PE阵列中一列上的乘加单元如下所示，BLOCK_IN大小为16，也就�
 每一条GEMM指令会对应到一组micro-op，如下图所示，uop存放在uop buffer中，包含acc_idx、inp_idx和wgt_idx这三个字段，提供数据的索引地址。GEMM指令根据uop提供的索引将计算过程循环嵌套成多个for循环，以保证GEMM核在每个周期可以执行一次`（BATCH，BLOCK_IN）×（BLOCK_OUT， BLOCK_IN）`。如下面伪代码所示，最内层循环对inp和wgt数据进行矩阵乘法，将结果累加到acc_mem中，同时根据GEMM指令中的字段更新下次循环所需数据存放在buffer中的索引。
 
 <img src="C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201022191246618.png" alt="image-20201022191246618" style="zoom: 50%;" />
+
+COMPUTE模块的原理图可以表示为下图，指令寄存器接受来自指令队列的指令流，译码后对不同类型指令进行操作，最后将of写入reg file中等待STORE指令将结果写入DRAM中。
+
+![image-20201029163116416](C:\Users\pc\AppData\Roaming\Typora\typora-user-images\image-20201029163116416.png)
 
 
 
