@@ -7,82 +7,78 @@ load 模块测试代码
 
 `timescale 1ns/1ps
 module tb_load();
-	reg ap_clk, ap_rst_n;
-  
+	reg 		ap_clk, ap_rst_n;
+	//s_axi_CONTROL_BUS
+	reg [4:0]	s_axi_CONTROL_BUS_AWADDR;
+	reg 		s_axi_CONTROL_BUS_AWVALID;
+	wire 		s_axi_CONTROL_BUS_AWREADY;
+	reg [31:0]	s_axi_CONTROL_BUS_WDATA;
+	reg [3:0] 	s_axi_CONTROL_BUS_WSTRB;
+	reg 		s_axi_CONTROL_BUS_WVALID;
+	wire 		s_axi_CONTROL_BUS_WREADY;
+	wire [1:0] 	s_axi_CONTROL_BUS_BRESP;
+	wire 		s_axi_CONTROL_BUS_BVALID;
+	reg 		s_axi_CONTROL_BUS_BREADY;
+	
+	reg [4:0] 	s_axi_CONTROL_BUS_ARADDR;
+	reg 		s_axi_CONTROL_BUS_ARVALID;
+	wire 		s_axi_CONTROL_BUS_ARREADY;
+	wire [31:0] 	s_axi_CONTROL_BUS_RDATA;
+	wire [1:0] 	s_axi_CONTROL_BUS_RRESP;
+	wire 		s_axi_CONTROL_BUS_RVALID;
+	reg 		s_axi_CONTROL_BUS_RREADY;
+	
+	// m_axi_data_port
+	wire [31:0] 	m_axi_data_port_AWADDR;
+	wire [7:0] 	m_axi_data_port_AWLEN;
+	wire [2:0] 	m_axi_data_port_AWSIZE;
+	wire 		m_axi_data_port_AWVALID;
+	reg 		m_axi_data_port_AWREADY;
+	wire [64:0] 	m_axi_data_port_WDATA;
+	wire [7:0] 	m_axi_data_port_WSTRB;
+	wire 		m_axi_data_port_WLAST;
+	wire 		m_axi_data_port_WVALID;
+	reg 		m_axi_data_port_WREADY;
+	reg [1:0] 	m_axi_data_port_BRESP;
+	reg 		m_axi_data_port_BVALID;
+	wire 		m_axi_data_port_BREADY;
+	wire [31:0] 	m_axi_data_port_ARADDR;
+	wire 		m_axi_data_port_ARVALID;
+	reg 		m_axi_data_port_ARREADY;
+	reg [63:0] 	m_axi_data_port_RDATA;
+	reg [1:0] 	m_axi_data_port_RRESP;
+	reg 		m_axi_data_port_RLAST;
+	reg 		m_axi_data_port_RVALID;
+	wire 		m_axi_data_port_RREADY;
+	
+	//load_queue
+	reg 		load_queue_V_V_TVALID;
+	wire 		load_queue_V_V_TREADY;
+	reg [127:0] 	load_queue_V_V_TDATA;
+	
+	//l2g_dep_queue  
+	wire [7:0] 	l2g_dep_queue_V_TDATA;
+	wire 		l2g_dep_queue_V_TVALID;
+	reg 		l2g_dep_queue_V_TREADY;
+	
+	//g2l_dep_queue
+	reg 		g2l_dep_queue_V_TVALID;
+	wire 		g2l_dep_queue_V_TREADY;
+	reg [7:0] 	g2l_dep_queue_V_TDATA;
+
+	//inp_mem
+	wire [15:0] 	inp_mem_V_WEN_A;
+	wire [31:0] 	inp_mem_V_Addr_A;
+	wire [127:0] 	inp_mem_V_Din_A;
+	wire [127:0] 	inp_mem_V_Dout_A;	
+    	wire [127:0] 	insn;
+	
 	parameter clockperiod = 10;
-  
+	
 	initial begin
 		ap_clk = 0;
 		forever #(clockperiod/2) ap_clk = ~ap_clk;
 	end
-	
-	//s_axi_CONTROL_BUS
-	reg [4:0] s_axi_CONTROL_BUS_AWADDR;
-	reg s_axi_CONTROL_BUS_AWVALID;
-	wire s_axi_CONTROL_BUS_AWREADY;
-	reg [31:0] s_axi_CONTROL_BUS_WDATA;
-	reg [3:0] s_axi_CONTROL_BUS_WSTRB;
-	reg s_axi_CONTROL_BUS_WVALID;
-	wire s_axi_CONTROL_BUS_WREADY;
-	wire [1:0] s_axi_CONTROL_BUS_BRESP;
-	wire s_axi_CONTROL_BUS_BVALID;
-	reg s_axi_CONTROL_BUS_BREADY;
-	
-	reg [4:0] s_axi_CONTROL_BUS_ARADDR;
-	reg s_axi_CONTROL_BUS_ARVALID;
-	wire s_axi_CONTROL_BUS_ARREADY;
-	wire [31:0] s_axi_CONTROL_BUS_RDATA;
-	wire [1:0] s_axi_CONTROL_BUS_RRESP;
-	wire s_axi_CONTROL_BUS_RVALID;
-	reg s_axi_CONTROL_BUS_RREADY;
-	
-	// m_axi_data_port
-	wire [31:0] m_axi_data_port_AWADDR;
-	wire [7:0] m_axi_data_port_AWLEN;
-	wire [2:0] m_axi_data_port_AWSIZE;
-	wire m_axi_data_port_AWVALID;
-	reg m_axi_data_port_AWREADY;
-	wire [64:0] m_axi_data_port_WDATA;
-	wire [7:0] m_axi_data_port_WSTRB;
-	wire m_axi_data_port_WLAST;
-	wire m_axi_data_port_WVALID;
-	reg m_axi_data_port_WREADY;
-	reg [1:0] m_axi_data_port_BRESP;
-	reg m_axi_data_port_BVALID;
-	wire m_axi_data_port_BREADY;
-	wire [31:0] m_axi_data_port_ARADDR;
-	wire m_axi_data_port_ARVALID;
-	reg m_axi_data_port_ARREADY;
-	reg [63:0] m_axi_data_port_RDATA;
-	reg [1:0] m_axi_data_port_RRESP;
-	reg m_axi_data_port_RLAST;
-	reg m_axi_data_port_RVALID;
-	wire m_axi_data_port_RREADY;
-	
-	//load_queue
-	reg load_queue_V_V_TVALID;
-	wire load_queue_V_V_TREADY;
-	reg [127:0] load_queue_V_V_TDATA;
-	
-	//l2g_dep_queue  
-	wire [7:0] l2g_dep_queue_V_TDATA;
-	wire l2g_dep_queue_V_TVALID;
-	reg l2g_dep_queue_V_TREADY;
-	
-	//g2l_dep_queue
-	reg g2l_dep_queue_V_TVALID;
-	wire g2l_dep_queue_V_TREADY;
-	reg [7:0] g2l_dep_queue_V_TDATA;
-
-	//inp_mem
-	wire [15:0] inp_mem_V_WEN_A;
-	wire [31:0] inp_mem_V_Addr_A;
-	wire [127:0] inp_mem_V_Din_A;
-	wire [127:0] inp_mem_V_Dout_A;
-	
-
-	
-    wire [127:0] insn;
 	
 	// s_axi_CONTROL_BUS
 	initial begin 
